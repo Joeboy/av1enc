@@ -59,6 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Default is x720; use --resize=false to disable resizing"
         ),
     )
+    parser.add_argument(
+        "--quality",
+        choices=("standard", "high"),
+        default="standard",
+        help=(
+            "Encoding quality profile (default: standard). "
+            "Use --quality=high for fewer compression artifacts at the cost of larger files and slower encoding"
+        ),
+    )
     return parser
 
 
@@ -121,7 +130,9 @@ def detect_available_av1_encoders(ffmpeg_bin: str) -> set[str]:
     }
 
 
-def is_encoder_runtime_usable(ffmpeg_bin: str, video_encoder: str) -> bool:
+def is_encoder_runtime_usable(
+    ffmpeg_bin: str, video_encoder: str, quality_profile: str
+) -> bool:
     command = [
         ffmpeg_bin,
         "-hide_banner",
@@ -134,7 +145,7 @@ def is_encoder_runtime_usable(ffmpeg_bin: str, video_encoder: str) -> bool:
         "color=c=black:s=128x72:r=1",
         "-frames:v",
         "1",
-        *build_video_encoder_args(video_encoder),
+        *build_video_encoder_args(video_encoder, quality_profile=quality_profile),
         "-an",
         "-f",
         "null",
@@ -147,13 +158,15 @@ def is_encoder_runtime_usable(ffmpeg_bin: str, video_encoder: str) -> bool:
     return result.returncode == 0
 
 
-def select_runtime_video_encoder(ffmpeg_bin: str, available_encoders: set[str]) -> str:
+def select_runtime_video_encoder(
+    ffmpeg_bin: str, available_encoders: set[str], quality_profile: str
+) -> str:
     debug(f"Available AV1 encoders in ffmpeg build: {', '.join(available_encoders)}")
     for encoder in GPU_ENCODER_PREFERENCE:
         if encoder not in available_encoders:
             continue
         debug(f"Probing GPU encoder: {encoder}")
-        if is_encoder_runtime_usable(ffmpeg_bin, encoder):
+        if is_encoder_runtime_usable(ffmpeg_bin, encoder, quality_profile):
             debug(f"GPU encoder available: {encoder}")
             return encoder
         debug(f"GPU encoder unusable at runtime: {encoder}")
@@ -170,9 +183,12 @@ def build_video_preamble_args(video_encoder: str) -> list[str]:
 
 
 def build_video_encoder_args(
-    video_encoder: str, scale_filter: str | None = None
+    video_encoder: str,
+    scale_filter: str | None = None,
+    quality_profile: str = "standard",
 ) -> list[str]:
     maybe_scale = ["-vf", scale_filter] if scale_filter else []
+    is_high_quality = quality_profile == "high"
 
     if video_encoder == "av1_nvenc":
         return [
@@ -180,11 +196,11 @@ def build_video_encoder_args(
             "-c:v",
             "av1_nvenc",
             "-preset",
-            "p5",
+            "p6" if is_high_quality else "p5",
             "-rc",
             "vbr",
             "-cq",
-            "30",
+            "24" if is_high_quality else "28",
             "-b:v",
             "0",
             "-g",
@@ -199,7 +215,7 @@ def build_video_encoder_args(
             "-preset",
             "medium",
             "-global_quality:v",
-            "28",
+            "22" if is_high_quality else "26",
             "-g",
             "240",
         ]
@@ -210,7 +226,7 @@ def build_video_encoder_args(
             "-c:v",
             "av1_amf",
             "-quality",
-            "balanced",
+            "quality" if is_high_quality else "balanced",
             "-g",
             "240",
         ]
@@ -225,7 +241,7 @@ def build_video_encoder_args(
             "-c:v",
             "av1_vaapi",
             "-qp",
-            "30",
+            "24" if is_high_quality else "28",
             "-g",
             "240",
         ]
@@ -235,9 +251,9 @@ def build_video_encoder_args(
         "-c:v",
         "libsvtav1",
         "-preset",
-        "6",
+        "4" if is_high_quality else "6",
         "-crf",
-        "32",
+        "24" if is_high_quality else "30",
         "-pix_fmt",
         "yuv420p",
         "-g",
@@ -254,9 +270,14 @@ def build_ffmpeg_command(
     overwrite: bool,
     video_encoder: str,
     scale_filter: str | None,
+    quality_profile: str,
 ) -> list[str]:
     overwrite_flag = "-y" if overwrite else "-n"
-    video_args = build_video_encoder_args(video_encoder, scale_filter=scale_filter)
+    video_args = build_video_encoder_args(
+        video_encoder,
+        scale_filter=scale_filter,
+        quality_profile=quality_profile,
+    )
 
     return [
         ffmpeg_bin,
@@ -303,7 +324,9 @@ def main(argv: list[str] | None = None) -> None:
     global DEBUG
     DEBUG = args.debug
 
-    selected_encoder = select_runtime_video_encoder(ffmpeg_path, available_encoders)
+    selected_encoder = select_runtime_video_encoder(
+        ffmpeg_path, available_encoders, args.quality
+    )
 
     scale_filter: str | None = None
     if args.resize is None:
@@ -335,9 +358,10 @@ def main(argv: list[str] | None = None) -> None:
         overwrite=args.overwrite,
         video_encoder=selected_encoder,
         scale_filter=scale_filter,
+        quality_profile=args.quality,
     )
 
-    print(f"Using AV1 encoder: {selected_encoder}")
+    print(f"Using AV1 encoder: {selected_encoder} (quality: {args.quality})")
 
     if args.dry_run:
         print(" ".join(command))
@@ -359,6 +383,7 @@ def main(argv: list[str] | None = None) -> None:
                 overwrite=args.overwrite,
                 video_encoder="libsvtav1",
                 scale_filter=scale_filter,
+                quality_profile=args.quality,
             )
             subprocess.run(fallback_command, check=True)
             return
