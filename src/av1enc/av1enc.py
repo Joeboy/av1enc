@@ -363,8 +363,10 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Using AV1 encoder: {selected_encoder} (quality: {args.quality})")
 
+    print("Running ffmpeg with command:")
+    print(" ".join(command))
+
     if args.dry_run:
-        print(" ".join(command))
         return
 
     try:
